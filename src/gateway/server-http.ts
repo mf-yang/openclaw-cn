@@ -473,6 +473,7 @@ export function createGatewayHttpServer(opts: {
  * - Tailscale origins (*.ts.net domains, 100.64.0.0/10 IPv4, fd7a:115c:a1e0::/48 IPv6) are allowed
  * - Null origin (file:// protocol, privacy mode) is allowed for local clients
  * - Empty origin (non-browser clients) is allowed
+ * - Same Host as Origin (e.g. Control UI at http://PUBLIC_IP:18789) is allowed (CSWSH-safe)
  * - All other origins are rejected
  */
 function isValidWebSocketOrigin(req: IncomingMessage): boolean {
@@ -501,6 +502,15 @@ function isValidWebSocketOrigin(req: IncomingMessage): boolean {
     // Allow Tailscale IP addresses (100.64.0.0/10 IPv4, fd7a:115c:a1e0::/48 IPv6)
     if (isTailnetIPv4(hostname)) return true;
     if (isTailnetIPv6(hostname)) return true;
+
+    const hostHeader = (req.headers.host ?? "").trim();
+    if (hostHeader) {
+      const ol = origin.toLowerCase();
+      const hh = hostHeader.toLowerCase();
+      if (ol === `http://${hh}` || ol === `https://${hh}`) {
+        return true;
+      }
+    }
 
     return false;
   } catch {

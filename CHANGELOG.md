@@ -2,6 +2,12 @@
 
 Docs: https://clawd.org.cn/
 
+## Unreleased
+
+### bug修复
+
+- **修复公网 IP 直连 Control UI 时 WebSocket 断开 (1006)**：通过 `http://<公网 IP>:端口` 访问控制台时，浏览器 `Origin` 为公网主机，原 CSWSH 白名单未包含该情形，WebSocket 升级返回 403，页面表现为 `disconnected (1006)`。另：非本机访问时 `localStorage` 可能仍保存指向 `127.0.0.1` 或其它主机的 `gatewayUrl`，导致连错网关。修复：`isValidWebSocketOrigin()` 在 `Origin` 与请求头 `Host` 同源（`http(s)://` + Host，大小写不敏感）时放行；在 Control UI 的 `index.html` 中于入口模块之前加载 `gateway-host-fix.js`（`ui/public`），在应用启动前从 URL 写入 token、按需纠正 `gatewayUrl`。
+
 ## 0.2.0
 
 ### 新增功能
