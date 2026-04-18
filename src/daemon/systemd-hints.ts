@@ -1,4 +1,169 @@
+import fs from "node:fs/promises";
 import { formatCliCommand } from "../cli/command-format.js";
+
+// ─── Linux distribution detection ─────────────────────────────────────────
+
+export type LinuxDistroInfo = {
+  id: string;       // e.g. "ubuntu", "debian", "fedora"
+  like: string[];   // e.g. ["debian"] for ubuntu
+  isWSL: boolean;
+};
+
+let _distroCache: LinuxDistroInfo | null = null;
+
+/**
+ * Detect the current Linux distribution by reading /etc/os-release.
+ * This is the standard and reliable way to identify a distro (vs parsing
+ * process.env.OS / DISTRIB_ID which is not universally set).
+ */
+export async function detectLinuxDistro(): Promise<LinuxDistroInfo> {
+  if (_distroCache !== null) return _distroCache;
+
+  const wsl =
+    !!process.env.WSL_INTEROP ||
+    !!process.env.WSL_DISTRO_NAME ||
+    !!process.env.WSLENV;
+
+  try {
+    const content = await fs.readFile("/etc/os-release", "utf8");
+    const entries: Record<string, string> = {};
+    for (const line of content.split("\n")) {
+      const eqIdx = line.indexOf("=");
+      if (eqIdx < 0) continue;
+      const key = line.slice(0, eqIdx).trim();
+      const rawValue = line.slice(eqIdx + 1).trim().replace(/^"|"$/g, "");
+      entries[key] = rawValue;
+    }
+
+    const id = (entries.ID ?? "").toLowerCase();
+    const like = (entries.ID_LIKE ?? "")
+      .split(/\s+/)
+      .map((s) => s.toLowerCase())
+      .filter(Boolean);
+
+    _distroCache = { id, like, isWSL: wsl };
+  } catch {
+    _distroCache = { id: "", like: [], isWSL: wsl };
+  }
+
+  return _distroCache!;
+}
+
+/** Synchronous WSL check used in non-async contexts. */
+export function isWSLEnv(): boolean {
+  return (
+    !!process.env.WSL_INTEROP ||
+    !!process.env.WSL_DISTRO_NAME ||
+    !!process.env.WSLENV
+  );
+}
+
+// ─── Hint rendering ─────────────────────────────────────────────────────────
+
+/**
+ * Returns hints for when systemd user services are unavailable.
+ * @param options.wsl   - whether the current environment is WSL
+ * @param options.distro - optional distro info; if omitted, sync WSL check is used
+ */
+export function renderSystemdUnavailableHints(
+  options: { wsl?: boolean; distro?: LinuxDistroInfo } = {},
+): string[] {
+  const wsl = options.wsl ?? isWSLEnv();
+  const distro = options.distro;
+
+  if (wsl) {
+    return [
+      "WSL2 需要启用 systemd：编辑 /etc/wsl.conf 添加 [boot] 和 systemd=true",
+      "然后在 PowerShell 中运行: wsl --shutdown，再重新打开 WSL",
+      "验证命令: systemctl --user status",
+    ];
+  }
+
+  // Targeted hints based on detected distro
+  if (distro) {
+    const isUbuntu = distro.id === "ubuntu" || distro.like.includes("ubuntu") || distro.like.includes("debian");
+    if (isUbuntu) {
+      return [
+        "Ubuntu/Debian 用户请确保：",
+        "1. 已启用用户linger: sudo loginctl enable-linger $USER",
+        "2. 用户目录已创建: mkdir -p ~/.config/systemd/user",
+        "3. 可刷新会话: systemctl --user daemon-reexec",
+        "",
+        `或者使用前台模式: ${formatCliCommand("openclaw-cn gateway run")}`,
+      ];
+    }
+    if (distro.id === "fedora" || distro.like.includes("fedora")) {
+      return [
+        "Fedora 用户请确保已启用用户linger: sudo loginctl enable-linger $USER",
+        `或者使用前台模式: ${formatCliCommand("openclaw-cn gateway run")}`,
+      ];
+    }
+  }
+
+  return [
+    "systemd 用户服务不可用；请安装/启用 systemd，或使用其他进程管理器运行网关。",
+    `如果在容器中运行，请使用前台模式: ${formatCliCommand("openclaw-cn gateway run")}`,
+  ];
+}
+
+// ─── Error message builder (replaces manual "\n" concatenation) ────────────
+
+export type InstallErrorContext = {
+  cause: Error | unknown;
+  distro?: LinuxDistroInfo;
+  wsl?: boolean;
+};
+
+/**
+ * Builds a human-friendly multi-line error message for failed systemd service
+ * installation, with targeted hints based on distro and error content.
+ * Uses .join("\n") instead of scattered "\n" concatenation.
+ */
+export function buildInstallErrorMessage(ctx: InstallErrorContext): string {
+  const { cause, distro, wsl } = ctx;
+  const rawMsg = cause instanceof Error ? cause.message : String(cause);
+  const detail = rawMsg.toLowerCase();
+  const lines: string[] = [cause instanceof Error ? cause.message : String(cause)];
+
+  // Detect WSL from error message
+  const isWSLError =
+    wsl ||
+    detail.includes("wsl") ||
+    detail.includes("not been booted") ||
+    detail.includes("boot") && detail.includes("systemd");
+
+  // Detect Ubuntu/Debian from error message
+  const isUbuntuError =
+    detail.includes("ubuntu") ||
+    detail.includes("debian") ||
+    (distro && (distro.id === "ubuntu" || distro.like.includes("ubuntu") || distro.like.includes("debian")));
+
+  if (isWSLError) {
+    lines.push("", "WSL2 用户请注意:");
+    lines.push("1. 编辑 /etc/wsl.conf 添加:");
+    lines.push("   [boot]");
+    lines.push("   systemd=true");
+    lines.push("2. 重启WSL: wsl --shutdown");
+    lines.push("3. 重新打开WSL终端");
+  }
+
+  if (isUbuntuError) {
+    lines.push("", "Ubuntu/Debian 用户请注意:");
+    lines.push("1. 确保已启用用户linger: sudo loginctl enable-linger $USER");
+    lines.push("2. 创建用户目录: mkdir -p ~/.config/systemd/user");
+    lines.push("3. 重启用户服务: systemctl --user daemon-reexec");
+  }
+
+  // Always append alternatives
+  lines.push("", "替代方案:");
+  lines.push("• 使用前台模式: openclaw-cn gateway run");
+  lines.push("• 使用其他进程管理器 (pm2, supervisor等)");
+  lines.push("• 手动创建systemd服务文件");
+
+  return lines.join("\n");
+}
+
+// ─── Detail string checker ───────────────────────────────────────────────────
 
 export function isSystemdUnavailableDetail(detail?: string): boolean {
   if (!detail) return false;
@@ -10,165 +175,4 @@ export function isSystemdUnavailableDetail(detail?: string): boolean {
     normalized.includes("failed to connect to bus") ||
     normalized.includes("systemd user services are required")
   );
-}
-
-/**
- * 检测Ubuntu/Debian特定问题
- */
-export function detectUbuntuIssue(detail?: string, env: Record<string, string | undefined> = process.env): {
-  isUbuntu: boolean;
-  confidence: 'low' | 'medium' | 'high';
-  source?: string;
-  issue?: string;
-  fix?: string;
-  isWSL?: boolean;
-} {
-  if (!detail) {
-    // 检查环境变量
-    if (env.OS && env.OS.toLowerCase().includes('ubuntu')) {
-      return { isUbuntu: true, confidence: 'high', source: 'env.OS' };
-    }
-    if (env.DISTRIB_ID && env.DISTRIB_ID.toLowerCase().includes('ubuntu')) {
-      return { isUbuntu: true, confidence: 'high', source: 'env.DISTRIB_ID' };
-    }
-    return { isUbuntu: false, confidence: 'low' };
-  }
-  
-  const normalized = detail.toLowerCase();
-  
-  // 直接包含Ubuntu/Debian字样
-  if (normalized.includes('ubuntu') || normalized.includes('debian')) {
-    return { isUbuntu: true, confidence: 'high', source: 'error message' };
-  }
-  
-  // 检查常见的Ubuntu/Debian特定错误模式
-  const ubuntuLikePatterns = [
-    // DBus连接错误在Ubuntu上很常见
-    /failed to connect to bus.*no such file or directory/i,
-    /dbus.*connection/i,
-    // systemd用户服务配置问题
-    /systemctl --user.*unavailable/i,
-    /user.*service.*not.*found/i,
-    // 特定的文件路径模式
-    /\/home\/[^\/]+\/\.config\/systemd\/user/i,
-    /\/run\/user\/\d+\/bus/i
-  ];
-  
-  for (const pattern of ubuntuLikePatterns) {
-    if (pattern.test(detail)) {
-      return { 
-        isUbuntu: true, 
-        confidence: 'medium', 
-        source: 'error pattern',
-        pattern: pattern.toString()
-      };
-    }
-  }
-  
-  // 检查环境变量（备用方法）
-  const envVars = ['OS', 'DISTRIB_ID', 'DISTRIB_CODENAME', 'DISTRIB_DESCRIPTION'];
-  for (const envVar of envVars) {
-    if (env[envVar] && env[envVar].toLowerCase().includes('ubuntu')) {
-      return { 
-        isUbuntu: true, 
-        confidence: 'high', 
-        source: `env.${envVar}`,
-        value: env[envVar]
-      };
-    }
-    if (env[envVar] && env[envVar].toLowerCase().includes('debian')) {
-      return { 
-        isUbuntu: true, 
-        confidence: 'high', 
-        source: `env.${envVar}`,
-        value: env[envVar]
-      };
-    }
-  }
-  
-  return { isUbuntu: false, confidence: 'low' };
-}
-
-export function renderSystemdUnavailableHints(options: { 
-  wsl?: boolean;
-  ubuntu?: boolean;
-  issue?: string;
-  fix?: string;
-} = {}): string[] {
-  if (options.wsl) {
-    return [
-      "WSL2 需要启用 systemd：编辑 /etc/wsl.conf 添加 [boot] 和 systemd=true",
-      "然后在 PowerShell 中运行: wsl --shutdown，再重新打开 WSL",
-      "验证命令: systemctl --user status",
-    ];
-  }
-  
-  if (options.ubuntu) {
-    const hints = [
-      "Ubuntu/Debian systemd 用户服务配置指南:",
-      "",
-      "1. 启用用户 linger (允许用户服务在注销后继续运行):",
-      "   sudo loginctl enable-linger $USER",
-      "",
-      "2. 确保用户目录存在:",
-      "   mkdir -p ~/.config/systemd/user",
-      "",
-      "3. 重新加载用户服务:",
-      "   systemctl --user daemon-reexec",
-      "",
-      "4. 验证状态:",
-      "   systemctl --user status",
-      "",
-      "5. 如果使用WSL2，还需要:",
-      "   - 编辑 /etc/wsl.conf 添加:",
-      "     [boot]",
-      "     systemd=true",
-      "   - 重启WSL: wsl --shutdown",
-      "",
-      "如果仍无法使用systemd，替代方案:",
-      "- 使用前台模式: openclaw-cn gateway run",
-      "- 使用其他进程管理器:",
-      "  • pm2: pm2 start ~/.config/openclaw/run.sh --name openclaw",
-      "  • supervisor: 配置/etc/supervisor/conf.d/openclaw.conf",
-      "  • 手动systemd: 创建~/.config/systemd/user/openclaw.service",
-    ];
-    
-    if (options.issue) {
-      hints.unshift(`检测到问题: ${options.issue}`);
-      if (options.fix) {
-        hints.unshift(`修复建议: ${options.fix}`);
-      }
-    }
-    
-    return hints;
-  }
-  
-  return [
-    "systemd 用户服务不可用；请安装/启用 systemd，或使用其他进程管理器运行网关。",
-    `如果在容器中运行，请使用前台模式: ${formatCliCommand("openclaw-cn gateway run")}`,
-  ];
-}
-
-/**
- * 获取详细的systemd错误提示
- */
-export function getDetailedSystemdHints(detail?: string): string[] {
-  const ubuntuInfo = detectUbuntuIssue(detail);
-  
-  if (ubuntuInfo.isUbuntu) {
-    return renderSystemdUnavailableHints({ 
-      ubuntu: true, 
-      issue: ubuntuInfo.issue,
-      fix: ubuntuInfo.fix,
-      wsl: ubuntuInfo.isWSL
-    });
-  }
-  
-  // 检查是否为WSL
-  const normalized = detail?.toLowerCase() || '';
-  if (normalized.includes("wsl") || normalized.includes("windows subsystem")) {
-    return renderSystemdUnavailableHints({ wsl: true });
-  }
-  
-  return renderSystemdUnavailableHints();
 }

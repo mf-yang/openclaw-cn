@@ -228,21 +228,69 @@ export async function isSystemdUserServiceAvailableDetailed(): Promise<{
   };
 }
 
+/**
+ * Internal helper that extracts reason + fix from a failed systemctl output.
+ * Does NOT call execSystemctl again — caller is responsible for the first call.
+ */
+function parseSystemctlFailure(
+  detail: string,
+): { reason: string; fix: string } {
+  const d = detail.toLowerCase();
+
+  if (d.includes("not found")) {
+    return {
+      reason: "systemctl 命令未找到",
+      fix: "请安装 systemd: sudo apt install systemd",
+    };
+  }
+  if (d.includes("failed to connect to bus")) {
+    return {
+      reason: "无法连接到 DBus 总线",
+      fix: ["请启用用户 linger: sudo loginctl enable-linger $USER", "然后刷新会话: systemctl --user daemon-reexec"].join("\n"),
+    };
+  }
+  if (d.includes("not been booted with systemd")) {
+    return {
+      reason: "系统未使用 systemd 启动",
+      fix: ["如果是 WSL2，请编辑 /etc/wsl.conf 添加:", "  [boot]", "  systemd=true", "然后重启 WSL: wsl --shutdown"].join("\n"),
+    };
+  }
+  if (d.includes("no such file or directory")) {
+    return {
+      reason: "systemd 用户目录不存在",
+      fix: "创建目录: mkdir -p ~/.config/systemd/user",
+    };
+  }
+  if (d.includes("not supported")) {
+    return {
+      reason: "systemd 用户服务不支持",
+      fix: "请使用其他进程管理器或前台模式运行: openclaw-cn gateway run",
+    };
+  }
+
+  return {
+    reason: "systemd 用户服务不可用",
+    fix: "请检查 systemd 状态或使用前台模式运行: openclaw-cn gateway run",
+  };
+}
+
 async function assertSystemdAvailable() {
   const res = await execSystemctl(["--user", "status"]);
   if (res.code === 0) return;
-  const detail = res.stderr || res.stdout;
-  if (detail.toLowerCase().includes("not found")) {
+
+  const detail = (res.stderr + " " + res.stdout).toLowerCase();
+  if (detail.includes("not found")) {
     throw new Error("systemctl not available; systemd user services are required on Linux.");
   }
-  
-  // 提供更详细的错误信息
-  const availability = await isSystemdUserServiceAvailableDetailed();
-  if (!availability.available) {
-    throw new Error(`systemctl --user unavailable: ${availability.reason}\n修复建议: ${availability.fix}`);
-  }
-  
-  throw new Error(`systemctl --user unavailable: ${detail || "未知错误"}`.trim());
+
+  // Reuse the result we already have instead of calling execSystemctl again.
+  const { reason, fix } = parseSystemctlFailure(res.stderr || res.stdout);
+  throw new Error(
+    [
+      `systemctl --user unavailable: ${reason}`,
+      `修复建议: ${fix}`,
+    ].join("\n"),
+  );
 }
 
 export async function installSystemdService({
