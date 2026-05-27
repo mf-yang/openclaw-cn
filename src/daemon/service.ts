@@ -26,6 +26,7 @@ import {
   stopSystemdService,
   uninstallSystemdService,
 } from "./systemd.js";
+import { buildInstallErrorMessage, detectLinuxDistro, isWSLEnv } from "./systemd-hints.js";
 
 export type GatewayServiceInstallArgs = {
   env: Record<string, string | undefined>;
@@ -99,7 +100,17 @@ export function resolveGatewayService(): GatewayService {
       loadedText: "enabled",
       notLoadedText: "disabled",
       install: async (args) => {
-        await installSystemdService(args);
+        try {
+          await installSystemdService(args);
+        } catch (error) {
+          const distro = await detectLinuxDistro();
+          const enhancedError = buildInstallErrorMessage({
+            cause: error,
+            distro,
+            wsl: isWSLEnv(),
+          });
+          throw new Error(enhancedError);
+        }
       },
       uninstall: async (args) => {
         await uninstallSystemdService(args);
