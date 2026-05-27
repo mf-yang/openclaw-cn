@@ -22,21 +22,6 @@
   <a href="https://clawd.org.cn/sponsor.html">❤️ 为爱发电（赞助）</a>
 </p>
 
----
-
-## 💎 赞助商
-
-<p align="center">
-  <a href="https://platform.ephone.ai">
-    <img src="https://platform.ephone.ai/logo-e.png" alt="ePhone AI" height="48">
-  </a>
-</p>
-<p align="center">
-  <a href="https://platform.ephone.ai"><b>ePhone AI</b></a> — 统一接入，极速集成；支持 Claude、GPT 等主流模型
-</p>
-
----
-
 ## ✨ 特性
 
 - **🇨🇳 完整中文化** — CLI、Web 控制界面、配置向导全部汉化
@@ -136,6 +121,7 @@ pnpm openclaw-cn onboard --install-daemon
   <a href="https://github.com/yebohong02"><img src="https://avatars.githubusercontent.com/yebohong02?v=4" width="48" height="48" alt="yebohong02" /></a>
   <a href="https://github.com/lvjianchaos"><img src="https://avatars.githubusercontent.com/lvjianchaos?v=4" width="48" height="48" alt="lvjianchaos" /></a>
   <a href="https://github.com/Yogdunana"><img src="https://avatars.githubusercontent.com/Yogdunana?v=4" width="48" height="48" alt="Yogdunana" /></a>
+  <a href="https://github.com/fanzifeng"><img src="https://avatars.githubusercontent.com/fanzifeng?v=4" width="48" height="48" alt="fanzifeng" /></a>
 </p>
 
 ## 📋 开发计划
